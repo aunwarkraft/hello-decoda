@@ -80,3 +80,8 @@ instance/
 *.temp
 temp/
 tmp/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3

@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta
 import random
+import pytz
 
 from models import (
     Provider,
@@ -12,12 +13,27 @@ from models import (
     AppointmentSlot,
     AppointmentProvider
 )
-from mock_db import (
+from repository import (
     get_providers,
     get_provider_by_id,
     check_slot_availability,
     create_appointment,
-    get_booked_slots
+    get_booked_slots,
+    get_provider_appointments
+)
+from config import settings
+from utils import (
+    get_local_now,
+    to_utc,
+    from_utc,
+    format_iso8601,
+    TZ
+)
+from errors import (
+    NotFoundError,
+    ValidationError,
+    ConflictError,
+    UnprocessableEntityError
 )
 
 app = FastAPI(title="Healthcare Appointment API", version="1.0.0")
@@ -25,7 +41,7 @@ app = FastAPI(title="Healthcare Appointment API", version="1.0.0")
 # Configure CORS for Next.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -62,7 +78,7 @@ async def get_availability(
 ):
     """
     Get available time slots for a provider within a date range.
-    
+
     Business Rules:
     - 30-minute slots
     - 9:00 AM - 5:00 PM
@@ -73,26 +89,26 @@ async def get_availability(
     # Validate provider exists
     provider = get_provider_by_id(provider_id)
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
-    
-    # Parse dates
+        raise NotFoundError("Provider not found")
+
+    # Parse dates in local timezone
     try:
-        start = datetime.strptime(start_date, "%Y-%m-%d")
-        end = datetime.strptime(end_date, "%Y-%m-%d")
+        start = TZ.localize(datetime.strptime(start_date, "%Y-%m-%d"))
+        end = TZ.localize(datetime.strptime(end_date, "%Y-%m-%d"))
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
-    
+        raise ValidationError("Invalid date format. Use YYYY-MM-DD")
+
     if end <= start:
-        raise HTTPException(status_code=400, detail="end_date must be after start_date")
-    
+        raise ValidationError("end_date must be after start_date")
+
     # Get booked slots
     booked_slots = get_booked_slots(provider_id, start_date, end_date)
-    
-    # Generate time slots
+
+    # Generate time slots in local timezone
     slots = []
     current_date = start
-    now = datetime.now()
-    
+    now = get_local_now()
+
     while current_date <= end:
         # Skip weekends (0 = Monday, 6 = Sunday)
         if current_date.weekday() < 5:  # Monday to Friday
@@ -102,23 +118,29 @@ async def get_availability(
                     # Skip lunch hour (12:00 PM - 1:00 PM)
                     if hour == 12:
                         continue
-                    
-                    slot_start = current_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+                    # Create slot start time in local timezone
+                    # Use replace() which preserves timezone awareness
+                    slot_start = current_date.replace(
+                        hour=hour, minute=minute, second=0, microsecond=0)
+                    # Ensure timezone is preserved
+                    if slot_start.tzinfo is None:
+                        slot_start = TZ.localize(slot_start)
                     slot_end = slot_start + timedelta(minutes=30)
-                    
+
                     # Only include future slots
                     if slot_start > now:
                         slot_id = f"slot-{provider_id}-{int(slot_start.timestamp() * 1000)}"
-                        
+
                         slots.append(TimeSlot(
                             id=slot_id,
-                            start_time=slot_start.isoformat() + "Z",
-                            end_time=slot_end.isoformat() + "Z",
+                            start_time=format_iso8601(slot_start),
+                            end_time=format_iso8601(slot_end),
                             available=slot_id not in booked_slots
                         ))
-        
+
         current_date += timedelta(days=1)
-    
+
     return AvailabilityResponse(
         provider=AppointmentProvider(
             id=provider["id"],
@@ -133,43 +155,63 @@ async def get_availability(
 async def book_appointment(request: CreateAppointmentRequest):
     """
     Create a new appointment.
-    
+
     Validates:
     - Provider exists
     - Slot is available
     - Patient information is valid
     - Reason for visit is provided
+    - Slot is in allowed window (not weekend/lunch)
     """
     # Validate provider exists
     provider = get_provider_by_id(request.provider_id)
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
-    
-    # Check slot availability
-    is_available = check_slot_availability(request.slot_id, request.provider_id)
-    if not is_available:
-        raise HTTPException(
-            status_code=409,
-            detail="This time slot has already been booked"
-        )
-    
+        raise NotFoundError("Provider not found")
+
     # Parse slot ID to get times
     try:
         # Extract timestamp from slot_id: "slot-provider-1-1234567890"
-        slot_timestamp = int(request.slot_id.split('-')[-1]) / 1000
-        start_time = datetime.fromtimestamp(slot_timestamp)
+        # The timestamp in slot_id is milliseconds, convert to seconds
+        slot_timestamp_ms = int(request.slot_id.split('-')[-1])
+        slot_timestamp = slot_timestamp_ms / 1000
+
+        # The timestamp is a POSIX timestamp (UTC-based seconds since epoch)
+        # Convert to UTC first, then to local timezone
+        # This ensures correct timezone conversion
+        start_time_utc = datetime.fromtimestamp(slot_timestamp, tz=pytz.UTC)
+        start_time = from_utc(start_time_utc)
         end_time = start_time + timedelta(minutes=30)
-    except (ValueError, IndexError):
-        raise HTTPException(status_code=400, detail="Invalid slot ID format")
-    
+    except (ValueError, IndexError) as e:
+        raise ValidationError(f"Invalid slot ID format: {str(e)}")
+
+    # Validate slot is in allowed window
+    if start_time.weekday() >= 5:  # Weekend
+        raise UnprocessableEntityError(
+            "Appointments cannot be booked on weekends")
+    if start_time.hour == 12:  # Lunch hour
+        raise UnprocessableEntityError(
+            "Appointments cannot be booked during lunch (12:00-1:00 PM)")
+    if start_time.hour < 9 or start_time.hour >= 17:
+        raise UnprocessableEntityError(
+            "Appointments can only be booked between 9 AM and 5 PM")
+    if start_time < get_local_now():
+        raise UnprocessableEntityError("Cannot book appointments in the past")
+
+    # Check slot availability
+    is_available = check_slot_availability(
+        request.slot_id, request.provider_id)
+    if not is_available:
+        raise ConflictError("This time slot has already been booked", details={
+                            "slot_id": request.slot_id})
+
     # Generate reference number
     date_str = start_time.strftime("%Y%m%d")
     random_num = str(random.randint(0, 999)).zfill(3)
     reference_number = f"REF-{date_str}-{random_num}"
-    
+
     # Create appointment data
     appointment_data = {
-        "id": f"appointment-{int(datetime.now().timestamp() * 1000)}",
+        "id": f"appointment-{int(get_local_now().timestamp() * 1000)}",
         "reference_number": reference_number,
         "slot_id": request.slot_id,
         "provider_id": request.provider_id,
@@ -178,15 +220,15 @@ async def book_appointment(request: CreateAppointmentRequest):
         "patient_email": request.patient.email,
         "patient_phone": request.patient.phone,
         "reason": request.reason,
-        "start_time": start_time.isoformat() + "Z",
-        "end_time": end_time.isoformat() + "Z",
+        "start_time": to_utc(start_time).isoformat(),
+        "end_time": to_utc(end_time).isoformat(),
         "status": "confirmed",
-        "created_at": datetime.now().isoformat() + "Z"
+        "created_at": to_utc(get_local_now()).isoformat()
     }
-    
-    # Save appointment (mock)
+
+    # Save appointment
     created = create_appointment(appointment_data)
-    
+
     # Return formatted response
     return Appointment(
         id=created["id"],
@@ -208,76 +250,35 @@ async def book_appointment(request: CreateAppointmentRequest):
 
 
 @app.get("/api/providers/{provider_id}/appointments")
-async def get_provider_appointments(
+async def get_provider_appointments_endpoint(
     provider_id: str,
     start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
     end_date: str = Query(..., description="End date (YYYY-MM-DD)")
 ):
     """
     Get all appointments for a provider within a date range.
-    
-    TODO: Implement this endpoint
-    - Validate provider exists
-    - Parse date range
-    - Query database for appointments
-    - Return formatted appointment list with patient info
     """
-    # TODO: Validate provider
     provider = get_provider_by_id(provider_id)
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
-    
-    # TODO: Validate dates
-    # TODO: Query appointments from database
-    # TODO: Replace mock data below with real database queries
-    
-    # Mock appointments for demonstration
-    mock_appointments = [
-        {
-            "id": "appt-001",
-            "patient_name": "John Doe",
-            "patient_email": "john.doe@example.com",
-            "start_time": "2024-10-18T09:00:00Z",
-            "end_time": "2024-10-18T09:30:00Z",
-            "reason": "Annual checkup",
-            "status": "confirmed"
-        },
-        {
-            "id": "appt-002",
-            "patient_name": "Jane Smith",
-            "patient_email": "jane.smith@example.com",
-            "start_time": "2024-10-18T10:00:00Z",
-            "end_time": "2024-10-18T10:30:00Z",
-            "reason": "Follow-up appointment",
-            "status": "confirmed"
-        },
-        {
-            "id": "appt-003",
-            "patient_name": "Bob Johnson",
-            "patient_email": "bob.j@example.com",
-            "start_time": "2024-10-19T14:00:00Z",
-            "end_time": "2024-10-19T14:30:00Z",
-            "reason": "Lab results review",
-            "status": "confirmed"
-        },
-        {
-            "id": "appt-004",
-            "patient_name": "Alice Williams",
-            "patient_email": "alice.w@example.com",
-            "start_time": "2024-10-21T11:00:00Z",
-            "end_time": "2024-10-21T11:30:00Z",
-            "reason": "Physical examination",
-            "status": "confirmed"
-        }
-    ]
-    
+        raise NotFoundError("Provider not found")
+
+    try:
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+    except ValueError:
+        raise ValidationError("Invalid date format. Use YYYY-MM-DD")
+
+    if end <= start:
+        raise ValidationError("end_date must be after start_date")
+
+    appointments = get_provider_appointments(provider_id, start_date, end_date)
+
     return {
         "provider_id": provider_id,
-        "appointments": mock_appointments
+        "appointments": appointments
     }
 
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
