@@ -41,6 +41,27 @@ pip install -r requirements.txt
 cd ..
 ```
 
+### Database Setup
+
+cd backend
+source venv/bin/activate
+python __init__db.py
+cd ..This will create the SQLite database file (`appointments.db`) and seed it with initial provider data.
+
+### Configuration
+
+Create a `.env` file in the `backend/` directory from the example:
+
+cd backend
+cp .env.example .envThe `.env` file contains configuration for:
+
+- `DATABASE_URL`: Database connection string (defaults to SQLite)
+- `APP_ENV`: Application environment (development, production, test)
+- `TIMEZONE`: Practice timezone (defaults to America/Toronto)
+- `CORS_ORIGINS`: Allowed CORS origins (comma-separated)
+
+You can modify these values as needed, or use the defaults.
+
 ### Running the Application
 
 **Frontend:**
@@ -159,7 +180,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000"])
 
 ## Submission
 
-### Submit:
+### Submit
 
 1. Complete source code (GitHub or ZIP)
 2. Updated README with setup instructions
