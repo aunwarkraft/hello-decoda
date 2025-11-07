@@ -72,6 +72,7 @@ export function DoctorCalendar({
           selected={selectedDate}
           onSelect={setSelectedDate}
           className="rounded-md border"
+          weekStartsOn={1}
           modifiers={{
             hasAppointments: daysWithAppointments,
           }}
