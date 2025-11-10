@@ -217,6 +217,27 @@ If you finish early and want to push further, consider adding any of the followi
 
 ---
 
+## Deployment
+
+For production deployment instructions, see:
+
+- **[DEPLOYMENT_QUICKSTART.md](./DEPLOYMENT_QUICKSTART.md)** - Quick reference guide
+- **[DEPLOYMENT.md](./DEPLOYMENT.md)** - Comprehensive deployment guide
+
+### Quick Deploy with Docker
+
+```bash
+# Setup environment
+cp .env.example .env
+# Edit .env with your production values
+
+# Build and start
+pnpm docker:build
+pnpm docker:up
+```
+
+---
+
 ## Resources
 
 - [Next.js Docs](https://nextjs.org/docs)
@@ -225,4 +246,4 @@ If you finish early and want to push further, consider adding any of the followi
 
 ---
 
-**We’re excited to see how you approach this challenge. Focus on writing thoughtful, production-quality code and demonstrating how you think through real product problems.**
+**We're excited to see how you approach this challenge. Focus on writing thoughtful, production-quality code and demonstrating how you think through real product problems.**
