@@ -35,8 +35,38 @@ from errors import (
     ConflictError,
     UnprocessableEntityError
 )
+from database import init_db
+from db_models import ProviderDB
+from database import SessionLocal
+import os
 
 app = FastAPI(title="Healthcare Appointment API", version="1.0.0")
+
+# Initialize database on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database and seed providers if needed"""
+    try:
+        # Ensure database directory exists (for SQLite)
+        db_path = settings.DATABASE_URL.replace("sqlite:///", "")
+        if db_path and db_path != ":memory:":
+            db_dir = os.path.dirname(db_path)
+            if db_dir and not os.path.exists(db_dir):
+                os.makedirs(db_dir, exist_ok=True)
+        
+        # Create tables
+        init_db()
+        
+        # Seed providers if they don't exist
+        db = SessionLocal()
+        try:
+            if db.query(ProviderDB).count() == 0:
+                from __init__db import seed_providers
+                seed_providers()
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"Warning: Database initialization error: {e}")
 
 # Configure CORS for Next.js frontend
 app.add_middleware(

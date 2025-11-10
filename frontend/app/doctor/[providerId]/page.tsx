@@ -1,5 +1,6 @@
 "use client";
 
+import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { Header } from "@/components/Header";
 import { getProviderAppointments, getProviders } from "@/lib/api";
@@ -9,19 +10,10 @@ import { AppointmentCard } from "@/components/AppointmentCard";
 import { DoctorCalendar } from "@/components/DoctorCalendar";
 import { format, addDays } from "date-fns";
 
-// TODO: Implement doctor schedule view
-// Requirements:
-// 1. ✅ Fetch appointments for this provider using API
-// 2. TODO: Display in calendar format (week or month view) - enhance DoctorCalendar component
-// 3. ✅ Show appointment details: patient name, time, reason
-// 4. ✅ Add loading and error states
-// 5. TODO: Make responsive for mobile - add better mobile layout
-
-export default function DoctorSchedulePage({
-  params,
-}: {
-  params: { providerId: string };
-}) {
+export default function DoctorSchedulePage() {
+  const params = useParams();
+  const providerId = params.providerId as string;
+  
   const startDate = format(new Date(), "yyyy-MM-dd");
   const endDate = format(addDays(new Date(), 30), "yyyy-MM-dd");
 
@@ -35,12 +27,12 @@ export default function DoctorSchedulePage({
     isLoading,
     error,
   } = useQuery({
-    queryKey: ["provider-appointments", params.providerId, startDate, endDate],
+    queryKey: ["provider-appointments", providerId, startDate, endDate],
     queryFn: () =>
-      getProviderAppointments(params.providerId, startDate, endDate),
+      getProviderAppointments(providerId, startDate, endDate),
   });
 
-  const provider = providers?.find((p) => p.id === params.providerId);
+  const provider = providers?.find((p) => p.id === providerId);
   const appointments = appointmentsData?.appointments || [];
 
   return (
@@ -75,15 +67,13 @@ export default function DoctorSchedulePage({
 
         {!isLoading && !error && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* TODO: Implement calendar view in DoctorCalendar component */}
             <div className="lg:col-span-2">
               <DoctorCalendar
-                providerId={params.providerId}
+                providerId={providerId}
                 appointments={appointments}
               />
             </div>
 
-            {/* Appointment List */}
             <div className="space-y-4">
               <div className="flex items-center gap-2 mb-4">
                 <Calendar className="w-5 h-5 text-primary" />
